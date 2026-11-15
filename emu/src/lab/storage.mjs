@@ -506,13 +506,14 @@ export class Storage {
   // cluster, the stamp and the clock record)
   // drive: the slot's the firmware's save settings name (camapp.mjs save_slot); the second slot's only where REC_FILE
   // records natively
-  write_picture(bytes, drive = DRIVE) {
+  write_picture(bytes, drive = DRIVE, raw = null) {
     if (drive !== DRIVE && !this.rec) throw new StorageError(`S-RECFILE: a picture for drive ${drive}: the lab records on the second slot only where REC_FILE runs natively (src/fw/models.mjs rec_native)`);
-    return this.rec ? this.rec_picture(bytes, drive) : this.f.recorder ? this.record(bytes) : this.fileif_picture(bytes);
+    return this.rec ? this.rec_picture(bytes, drive, raw) : this.f.recorder ? this.record(bytes) : this.fileif_picture(bytes);
   }
   // REC_FILE natively (src/lab/rec.mjs): its file, with the header REC_IMAGE's header maker builds
-  rec_picture(bytes, drive = DRIVE) {
-    const file = this.rec.record(bytes, drive);
+  // (raw: the lab's raw file in place of a picture, S-RAWFILE)
+  rec_picture(bytes, drive = DRIVE, raw = null) {
+    const file = this.rec.record(bytes, drive, raw);
     this._slot(drive).next_file = file.number + 1;
     this.files.push(file);
     this.log.push(['rec', `${file.path}: ${file.size} bytes (header ${file.header}) from cluster ${file.cluster}, dated '${file.date}'`]);

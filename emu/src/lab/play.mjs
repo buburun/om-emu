@@ -40,6 +40,10 @@ import { Tally } from '../util/tally.mjs';
 import { displayed_windows } from './windows.mjs';
 import { SettingsIds } from './settings_ids.mjs';
 import * as SC from './scene.mjs';
+import { developFrame, developRaw, developSettings, developShots, plainSettings } from './develop.mjs';
+import { orfOfRaw } from './orf.mjs';
+import { jpegOfFrame } from './jpeg.mjs';
+const PICTURE_QUALITY = 90;                   // S-DEVELOP's pictures (I: the camera's Fine is not read)
 import { CamApp, CA_MODULE9_READERS } from './camapp.mjs';
 import { AudioOut } from './audio.mjs';
 import { AudioHw } from './audiohw.mjs';
@@ -1987,7 +1991,7 @@ export class PlaySession extends N.NavSession {
     const state0 = lab.state();
     const c = BY_ID.get(`${which.toLowerCase()}_dial`);
     if (c === undefined) throw new KeyError(show(`${which.toLowerCase()}_dial`));
-    const [dial_id, slot] = c.dial;
+    const [dial_id, slot0] = c.dial, slot = MODEL_INFO.dial_slots?.[which.toLowerCase()] ?? slot0;   // (the model's slots, src/fw/models.mjs)
     const base = N.dial_counters(slot);
     const word = base + (detents > 0 ? 8 : 10);
     const posted = [];
@@ -2456,7 +2460,15 @@ export class PlaySession extends N.NavSession {
       const e = SC.exposureOf(sc);
       const cap = { n: sc.captures.length + 1, lab_ns: this.lab.lab_time(), shutter_s: e.shutter_s, aperture: e.aperture, iso: e.iso, ev_offset: +e.ev_offset.toFixed(2), focus_m: sc.lens.focus_m, af: sc.af };
       sc.captures.push(cap);
-      const view = { scene: structuredClone({ ...sc, captures: [], clips: [] }), t: this.lab.lab_time() / 1e9, frame_no: sc.frame_no + 1, capture: cap };
+      // S-DEVELOP: the shot's mode, from the firmware's own settings as S2 goes down
+      const P = MODEL_INFO.develop_props, develop = P ? developSettings(P, (id) => this.get(id)) : plainSettings();
+      const view = { scene: structuredClone({ ...sc, captures: [], clips: [] }), t: this.lab.lab_time() / 1e9, frame_no: sc.frame_no + 1, capture: cap, develop };
+      // Multiple Exposure: the first release's view is kept for the second's, which develops both
+      // (Overlay: the first exposure is the newest picture with a raw file, and this release makes the composite)
+      const over = develop.multi?.overlay ? this.camapp?.images.findLast((i) => i.raw) ?? null : null;
+      if (over) { view.multi_first = this.camapp.views.get(over.release); this.multi_first = null; }
+      else if (develop.multi && this.multi_first) { view.multi_first = this.multi_first; this.multi_first = null; }
+      else { this.multi_first = develop.multi ? view : null; view.multi_open = !!develop.multi; }
       this.capture_frame = this.scene_render();    // S-RECVIEW: the frame the capture holds, for the rec view
       this.camapp?.card_view(view);                // S-CARD: the scene the image keeps, for S-PLAYVIEW
       return { capture: cap };
@@ -2528,12 +2540,24 @@ export class PlaySession extends N.NavSession {
   // through image, and the live-view plane shows black until ctrl 1 (I: what the camera's plane shows meanwhile). Called
   // while the firmware runs: the frame changes at the next composite (scene_frame).
   scene_through(on) { this.through_off = !on; }
-  // S-RECFILE (storage.mjs): the frame of a picture's file, S-SCENE's frame rendered again from the scene kept with the
-  // capture (camapp.mjs S-CARD's view), or black for a capture without the live view
-  picture_frame(view) {
-    const [src] = D.LV_SCALED[this.device];
-    return view ? SC.renderFrame(view.scene, src[0], src[1], view.t, view.frame_no) : this.black_frame();
+  // S-RECFILE (storage.mjs): the frame of a picture's file, developed from the scene kept with the capture (S-DEVELOP,
+  // develop.mjs; camapp.mjs S-CARD's view) in the mode its settings give, or black for a capture without the live
+  // view: { frame, report (null for the black frame), jpeg }, the JPEG with a developed picture's DCT coded whole
+  // (the black frame's blocks their means, as before S-DEVELOP) and the firmware's own Huffman tables where the play
+  // module runs natively (A-JPEGDHT-1)
+  // ev: the frame's step from the plan's exposure (a bracket's). pictures(view): the files of one release, a
+  // bracket's frames or the one picture
+  picture(view, ev = 0) {
+    const [src] = D.LV_SCALED[this.device], dht = this.camapp?.play_native ? { dht: this.camapp.play_native.dht } : {};
+    const { frame, report } = view ? developFrame(view, src[0], src[1], view.develop, ev) : { frame: this.black_frame(), report: null };
+    // raw: the lab's raw file of the frame where the image quality has +RAW and the body records one (S-RAWFILE)
+    const raw = view?.develop.raw && MODEL_INFO.rec_file_handler ? orfOfRaw(developRaw(view, src[0], src[1], ev)) : null;
+    if (report) report.raw = raw !== null;
+    return { frame, report, raw, jpeg: jpegOfFrame(frame, { ...dht, ...(report ? { quality: PICTURE_QUALITY } : {}) }) };
   }
+  // (none for Multiple Exposure's first release)
+  pictures(view) { return (view ? developShots(view.develop, view.multi_open === true) : [0]).map((ev) => this.picture(view, ev)); }
+  picture_frame(view) { return this.picture(view).frame; }
   black_frame() {
     const [src] = D.LV_SCALED[this.device];
     const row = new Uint8Array(2 * src[0]);
@@ -2584,7 +2608,9 @@ export class PlaySession extends N.NavSession {
       harness_entries: lists, heap, layout: lab.b2_snapshot(), a15: this.a15_status(), a15_frames: this.a15_frames, switches: this.switches,
       eye: lab.sim.read(EYE_WORD, 1)[0], xcpu: lab.xcpu_log ? lab.xcpu_log.length : 0, xcpu_waiting: lab.xcpu_waiting ?? 0,
       ...(this.camapp !== null ? { camapp: this.camapp.status() } : {}),
-      ...(this.scene !== null ? { scene: { ...SC.sceneReport(this.scene), liveview: this.scene.liveview, captures: this.scene.captures.slice(-5), clips: this.scene.clips.slice(-5) } } : {}) };
+      ...(this.scene !== null ? { scene: { ...SC.sceneReport(this.scene), liveview: this.scene.liveview, captures: this.scene.captures.slice(-5), clips: this.scene.clips.slice(-5),
+        // S-DEVELOP: how the last pictures were developed (camapp.mjs S-CARD)
+        developed: (this.camapp?.images ?? []).filter((i) => i.develop).slice(-5).map((i) => ({ number: i.number, ...i.develop })) } } : {}) };
   }
   // The page's A15 line: the text while the shown frame rests on A15, else the guard's verdict.
   a15_status() {

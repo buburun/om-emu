@@ -69,7 +69,7 @@ export function sessionUnits() {
     ['main_dial:+3', '{"kind":"dial","id":"main_dial","detents":3}'], ['sub_dial:-8', '{"kind":"dial","id":"sub_dial","detents":-8}'],
     ['wait:1500', '{"kind":"wait","ms":1500}'], ['WAIT:20', '{"kind":"token","token":"WAIT:20"}'], ['SET:24=3', '{"kind":"token","token":"SET:24=3"}'], ['OPEN', '{"kind":"token","token":"OPEN"}'],
     ['switch:creative_dial=3', '{"kind":"switch","id":"creative_dial","value":3}'], ['switch:mode_dial-1', '{"kind":"switch","id":"mode_dial","by":-1}'],
-    ['power:off', '{"kind":"power"}'], ['restart', '{"kind":"restart","card":null}'], ['restart:card=b.omsd', '{"kind":"restart","card":"b.omsd"}'],
+    ['power:off', '{"kind":"power"}'], ['scene:liveview=on,preset=canyon,ev=10,shutter_s=1/4', '{"kind":"scene","change":{"liveview":true,"preset":"canyon","ev":10,"shutter_s":0.25}}'], ['restart', '{"kind":"restart","card":null}'], ['restart:card=b.omsd', '{"kind":"restart","card":"b.omsd"}'],
     ['shot:a/b.png', '{"kind":"shot","file":"a/b.png"}'], ['read:0xa32de590:4', `{"kind":"read","addr":${0xa32de590},"len":4}`],
     ['write:0x10=00ff', '{"kind":"write","addr":16,"hex":"00ff"}'],
     ['call:0x603f0111:d0=901,a0=0x10,limit=5000', `{"kind":"call","fn":${0x603f0111},"regs":{"d0":901,"a0":16},"limit":5000,"space":null}`],
@@ -86,7 +86,7 @@ export function sessionUnits() {
   for (const [x, want] of forms) { const got = thrown(() => p(x)) ?? p(x); ok(got === want, `${x}: ${got}`); }
   const refusals = ['', 'OK', 'ok:sideways', 'main_dial:+9', 'main_dial:+0', 'wait:-1', 'wait:1.5', 'read:0x10:0', 'read:0x10:70000', 'read:zz:4', 'write:0x10=abc',
     'write:0x1ffffffff=00', 'call:0x10:sp=1', 'call:0x10:d0', 'call:0x10:d0=0x100000000', 'call:0x10:space=flash', 'shot:a.jpg', 'card-get:A.JPG', 'exif:DCIM/*/A.JPG',
-    'expect:gui', 'expect:mem:0x10=a', 'expect:exif:A.JPG:Nope=1', 'expect:standin:lower', 'expect:nothing', 'switch:creative_dial', 'hold:ok:x', 'restart:x', 'a-b'];
+    'expect:gui', 'expect:mem:0x10=a', 'expect:exif:A.JPG:Nope=1', 'expect:standin:lower', 'expect:nothing', 'switch:creative_dial', 'scene:liveview', 'scene:', 'hold:ok:x', 'restart:x', 'a-b'];
   for (const x of refusals) ok(thrown(() => parseToken(x)) instanceof TokenError, `refused: ${JSON.stringify(x)} -> ${thrown(() => parseToken(x))?.message ?? 'taken'}`);
   // the Player inputs
   const inp = (x, settle) => JSON.stringify(stepInputs(parseToken(x), settle));

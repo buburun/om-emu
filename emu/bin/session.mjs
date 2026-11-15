@@ -17,7 +17,7 @@
 // Each argument and each --script line is split into tokens at white space ("..." keeps spaces; # starts a comment).
 // The tokens: KEY (a press: down, 150 ms, up, then --settle of lab time), KEY:down, KEY:up, hold:KEY[:MS],
 // main_dial:+N / sub_dial:-N, wait:MS, play's own tokens (WAIT:MS, EV:..., SET:id=v, GET:id, ...), switch:ID=V or
-// switch:ID+N (creative_dial, mode_dial, still_movie, lever, ...), power:off, restart[:card=FILE] (a new session in this process
+// switch:ID+N (creative_dial, mode_dial, still_movie, lever, ...), scene:KEY=VALUE[,KEY=VALUE] (S-SCENE's input: scene:liveview=on,preset=canyon), power:off, restart[:card=FILE] (a new session in this process
 // on the same nvram file and card, or the card FILE), shot:FILE.png (the last published frame, /api/frame's pixels),
 // read:ADDR:LEN, dump:ADDR:LEN:FILE (up to 64 MiB into FILE), write:ADDR=HEX (a poke: flagged in the summary and the last line), call:FN[:d0=..,a0=..,limit=N]
 // (and entry=PC, stop=PC..., frame=MASK/SIZE: a mid-function call), call:@FILE (the call op's whole request as JSON;

@@ -6,11 +6,36 @@
 // dht (optional): a DHT segment (ff c4, its length, then the tables) holding the four tables the stream uses (DC and
 // AC, ids 0 and 1), written in place of the lab's own four and used for the coding (the firmware's own tables with the
 // play module native, src/lab/playmod.mjs A-JPEGDHT-1; docs/hle-gaps.md 4.8.11). Without it the output is as before.
+// quality (optional, 1..100): the whole DCT coded, every block's 64 coefficients quantized by T.81 Annex K.1's tables
+// scaled as the IJG code scales them, with Annex K.3's AC tables (or dht's): a picture of the frame, for the
+// development's output (src/lab/develop.mjs S-DEVELOP). Without it each block is its mean, as above.
 
 // T.81 Annex K.3's DC tables (code lengths 1..16 and the categories), and an AC table with its one symbol, EOB
 const DC_LUMA = [[0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]];
 const DC_CHROMA = [[0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]];
 const AC_EOB = [[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0]];
+// Annex K.3.3.2's AC tables
+const AC_LUMA = [[0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7d], [
+  0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08,
+  0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28,
+  0x29, 0x2a, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
+  0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+  0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6,
+  0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2,
+  0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa]];
+const AC_CHROMA = [[0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 0x77], [
+  0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
+  0xa1, 0xb1, 0xc1, 0x09, 0x23, 0x33, 0x52, 0xf0, 0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16, 0x24, 0x34, 0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26,
+  0x27, 0x28, 0x29, 0x2a, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
+  0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+  0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4,
+  0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda,
+  0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa]];
+// Annex K.1's quantization tables (Tables K.1 and K.2), in row-major order
+const Q_LUMA = [16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62,
+  18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99];
+const Q_CHROMA = [17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99, 99, 24, 26, 56, 99, 99, 99, 99, 99, 47, 66, 99, 99, 99, 99, 99, 99,
+  ...new Array(32).fill(99)];
 const Q = 8;                                     // every entry of the quantization table: a DC of 8 x (mean - 128)
 
 // T.81 Annex C: the codes of a table, symbol -> [code, length]
@@ -52,8 +77,9 @@ export function dhtTables(segment) {
   return out;
 }
 
-export function jpegOfFrame([w, h, rows], { dht: given = null } = {}) {
+export function jpegOfFrame([w, h, rows], { dht: given = null, quality = null } = {}) {
   if (!(w > 0 && h > 0 && w < 65536 && h < 65536)) throw new RangeError(`jpegOfFrame: ${w} x ${h}`);
+  if (quality !== null) return jpegDct([w, h, rows], given, quality);
   const own = given ? dhtTables(given) : null;
   if (own && ![0x00, 0x01, 0x10, 0x11].every((tc) => own.has(tc))) {
     throw new RangeError('jpegOfFrame: the DHT lacks a DC or AC table 0 or 1');
@@ -96,6 +122,63 @@ export function jpegOfFrame([w, h, rows], { dht: given = null } = {}) {
     ...seg(0xda, [3, 1, 0x00, 2, 0x11, 3, 0x11, 0, 63, 0]),
     ...bits.flush(), 0xff, 0xd9];
   return Uint8Array.from(out);
+}
+
+// jpegOfFrame with a quality: the frame's DCT coded whole (T.81 Annex A.3.3's forward DCT, F.1.2's coding)
+function jpegDct([w, h, rows], given, quality) {
+  if (!(Number.isInteger(quality) && quality >= 1 && quality <= 100)) throw new RangeError(`jpegOfFrame: quality ${quality}`);
+  const own = given ? dhtTables(given) : null;
+  if (own && ![0x00, 0x01, 0x10, 0x11].every((tc) => own.has(tc))) throw new RangeError('jpegOfFrame: the DHT lacks a DC or AC table 0 or 1');
+  const T = own ? [0x00, 0x01, 0x10, 0x11].map((tc) => own.get(tc)) : [DC_LUMA, DC_CHROMA, AC_LUMA, AC_CHROMA];
+  const [dc0, dc1, ac0, ac1] = T.map(codes);
+  const k = quality < 50 ? 5000 / quality : 200 - 2 * quality;
+  const scaled = (t) => t.map((v) => Math.min(255, Math.max(1, Math.floor((v * k + 50) / 100))));
+  const q = [scaled(Q_LUMA), scaled(Q_CHROMA)];
+  const bits = new Bits(), pred = [0, 0, 0], blk = new Float64Array(64), tmp = new Float64Array(64), zz = new Int32Array(64);
+  const sample = (x, y, off) => rows[Math.min(y, h - 1)][2 * x + off];
+  const need = (t, sym) => { const c = t.get(sym); if (!c) throw new RangeError(`jpegOfFrame: the DHT has no code for symbol 0x${sym.toString(16)}`); return c; };
+  const block = (comp) => {
+    // rows then columns: F(u) = C(u) / 2 * sum f(x) cos((2x + 1) u pi / 16), IDCT_C's transpose
+    for (let y = 0; y < 8; y++) for (let u = 0; u < 8; u++) { let a = 0; for (let x = 0; x < 8; x++) a += IDCT_C[8 * x + u] * blk[8 * y + x]; tmp[8 * y + u] = a; }
+    for (let u = 0; u < 8; u++) for (let v = 0; v < 8; v++) { let a = 0; for (let y = 0; y < 8; y++) a += IDCT_C[8 * y + v] * tmp[8 * y + u]; blk[8 * v + u] = a; }
+    const qt = q[comp ? 1 : 0], dct = comp ? dc1 : dc0, act = comp ? ac1 : ac0;
+    for (let i = 0; i < 64; i++) zz[i] = Math.round(blk[NATURAL[i]] / qt[NATURAL[i]]);
+    const put = (t, sym, v) => {
+      const mag = Math.abs(v), cat = mag === 0 ? 0 : 32 - Math.clz32(mag), [code, len] = need(t, sym | cat);
+      bits.put(code, len);
+      if (cat) bits.put(v < 0 ? v + (1 << cat) - 1 : v, cat);
+    };
+    put(dct, 0, zz[0] - pred[comp]); pred[comp] = zz[0];
+    let run = 0;
+    for (let i = 1; i < 64; i++) {
+      if (zz[i] === 0) { run += 1; continue; }
+      for (; run > 15; run -= 16) bits.put(...need(act, 0xf0));
+      put(act, run << 4, zz[i]); run = 0;
+    }
+    if (run) bits.put(...need(act, 0));
+  };
+  for (let my = 0; my < Math.ceil(h / 8); my++) for (let mx = 0; mx < Math.ceil(w / 16); mx++) {
+    const x0 = 16 * mx, y0 = 8 * my;
+    for (const bx of [0, 8]) {
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) blk[8 * y + x] = sample(Math.min(x0 + bx + x, w - 1), y0 + y, 0) - 128;
+      block(0);
+    }
+    for (const odd of [0, 1]) {                  // Cb at the even pixel of a pair, Cr at the odd one
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+        const px = Math.min(x0 + 2 * x + odd, w - 1 - ((w - 1 - odd) & 1));
+        blk[8 * y + x] = sample(px, y0 + y, 1) - 128;
+      }
+      block(1 + odd);
+    }
+  }
+  const dqt = (id, t) => seg(0xdb, [id, ...Array.from(NATURAL, (n) => t[n])]);
+  return Uint8Array.from([0xff, 0xd8,
+    ...seg(0xe0, [0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]),
+    ...dqt(0, q[0]), ...dqt(1, q[1]),
+    ...seg(0xc0, [8, h >> 8, h & 255, w >> 8, w & 255, 3, 1, 0x21, 0, 2, 0x11, 1, 3, 0x11, 1]),
+    ...(given ? given : [...dht(0, 0, DC_LUMA), ...dht(1, 0, AC_LUMA), ...dht(0, 1, DC_CHROMA), ...dht(1, 1, AC_CHROMA)]),
+    ...seg(0xda, [3, 1, 0x00, 2, 0x11, 3, 0x11, 0, 63, 0]),
+    ...bits.flush(), 0xff, 0xd9]);
 }
 
 // The lab's decoder of a baseline JPEG (T.81: sequential DCT, Huffman coding, 8-bit samples, one interleaved scan),

@@ -102,7 +102,7 @@ const PLAY_TOKEN = /^(?:(?:WAIT|WAIT_UNTIL|EV|SET|CLOCK|GET|XCALL|WINDOWS):\S+|O
 // play's tokens that are harness inputs, not the camera's (the summary lists them): a GUI event posted, a setting
 // set through its native setter, the clock set, a native call of the lab's
 const HARNESS_TOKEN = /^(?:EV:|SET:|CLOCK:|XCALL:|OPEN$|CLOSE$)/;
-const RESERVED = ['wait', 'hold', 'switch', 'restart', 'shot', 'read', 'dump', 'write', 'call', 'exif', 'expect', 'trace', 'break', 'resume'];
+const RESERVED = ['wait', 'hold', 'switch', 'scene', 'restart', 'shot', 'read', 'dump', 'write', 'call', 'exif', 'expect', 'trace', 'break', 'resume'];
 const CALL_KEYS =['d0', 'd1', 'd2', 'd3', 'a0', 'a1', 'a2', 'a3', 'limit', 'space', 'entry', 'stop', 'frame'];
 // the fields of a call:@FILE request (src/debug/call.mjs callSpec's)
 export const CALL_FILE_KEYS = ['fn', 'space', 'entry', 'stops', 'regs', 'stack', 'frame', 'mem', 'read', 'restore', 'limit', 'scratch'];
@@ -136,6 +136,15 @@ export function parseToken(t) {
   if ((m = new RegExp(`^hold:(${ID})(?::(\\d+))?$`).exec(t))) return step('hold', { id: m[1], ms: m[2] === undefined ? HOLD_MS : Number(m[2]) });
   if ((m = new RegExp(`^switch:(${ID})(?:=(\\d+)|([+-]\\d+))$`).exec(t))) return step('switch', { id: m[1], ...(m[2] !== undefined ? { value: Number(m[2]) } : { by: Number(m[3]) }) });
   if (t === 'power:off') return step('power');
+  if ((m = /^scene:(.+)$/.exec(t))) {             // scene:K=V[,K=V...]: S-SCENE's input (play's {type: 'scene'}); on/off, numbers, names
+    const change = {};
+    for (const kv of m[1].split(',')) {
+      const [k, v, more] = kv.split('=');
+      if (!k || v === undefined || v === '' || more !== undefined) throw new TokenError(`${t}: ${JSON.stringify(kv)} is not KEY=VALUE (scene:liveview=on,preset=canyon,ev=10)`);
+      change[k] = v === 'on' ? true : v === 'off' ? false : /^-?\d+(\.\d+)?(\/\d+)?$/.test(v) ? (v.includes('/') ? Number(v.split('/')[0]) / Number(v.split('/')[1]) : Number(v)) : v;
+    }
+    return step('scene', { change });
+  }
   if ((m = /^restart(?::card=(.+))?$/.exec(t))) return step('restart', { card: m[1] ?? null });
   if ((m = /^shot:(.+\.png)$/i.exec(t))) return step('shot', { file: m[1] });
   if ((m = /^read:([^:]+):([^:]+)$/.exec(t))) {
@@ -253,6 +262,7 @@ export function stepInputs(st, settle = SETTLE_MS) {
     case 'token': return [{ type: 'token', token: st.token }];
     case 'switch': return [{ type: 'switch', id: st.id, ...('value' in st ? { value: st.value } : { step: st.by }) }, ...wait(settle)];
     case 'power': return [{ type: 'switch', id: 'power', value: 0 }];
+    case 'scene': return [{ type: 'scene', change: st.change }, ...wait(settle)];
     case 'card': return [{ type: 'card', action: st.action, ...(st.slot !== 1 ? { slot: st.slot } : {}) }];
     case 'read': return [{ type: 'debug', op: 'read', addr: st.addr, size: st.len }];
     case 'write': return [{ type: 'debug', op: 'write', addr: st.addr, hex: st.hex }];
@@ -672,6 +682,7 @@ export async function openSession(o = {}) {
     return complete(running, st.kind);
   };
   // a step's record finished: the session's state after it, the probes' hits, and onRecord (once per record)
+  let lastDeveloped = null;
   const complete = (rec, kind = null) => {
     if (completed.has(rec)) return rec;
     completed.add(rec);
@@ -680,6 +691,10 @@ export async function openSession(o = {}) {
     } catch (e) { if (BUG(e)) throw e; }
     const st2 = pl?.status_doc ?? {};
     Object.assign(rec, { phase: pl?.phase ?? null, lab_ns: pl?.session?.lab?.lab_time() ?? null, gui: pl?.session ? st2.gui_name ?? null : null, frame: pl?.frame?.[3] ?? null });
+    // S-DEVELOP: a picture developed in this step (its mode, frames, size, look, exposure; src/lab/develop.mjs)
+    const dev = st2.scene?.developed?.at(-1) ?? null;
+    if (dev && dev.number !== lastDeveloped) rec.developed = dev;
+    lastDeveloped = dev?.number ?? lastDeveloped;
     if (kind === 'restart') {
       rec.nvram = st2.nvram ?? null;          // the stores the new session restored (S-NVRAM)
       rec.carried = st2.carried ?? null;      // the controls' positions carried from power:off (null: a fresh start)

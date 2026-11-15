@@ -109,6 +109,30 @@ layer under the AF point, S2 records a capture with the exposure in use and REC 
 the stand-in's, because the camera modules that would run AF, the release and the movie recording do not run in the
 lab. Its inputs are session-log inputs, so `--replay` repeats them.
 
+**The picture a capture records (S-DEVELOP, `src/lab/develop.mjs`).** With the live view on, S2's file is developed
+from the scene by a stand-in for the camera's signal processing: an RGGB sensor with noise and a full well that clips,
+a demosaic, and the shot's mode read from the firmware's own settings as S2 goes down (E147: `src/fw/models.mjs`
+`develop_props`). Live ND averages its sub-frames over the set shutter time, HDR1 and HDR2 merge four exposures, High
+Res makes a larger picture (2x the sides on a tripod, 1.5x handheld), Live GND darkens the top of the frame, and the
+picture mode gives the look: each of the 8 picture modes, 4 colour profiles, 4 monochrome profiles and 31 art filters
+has its own (`develop.mjs` LOOKS). None of that arithmetic is the camera's: it is the harness's own, and
+the file's header lists what each mode does not model. The JPEG's DCT is coded whole (`src/lab/jpeg.mjs`, quality 90)
+and goes through the firmware's own recording path as before. A scripted session turns the live view on and changes
+the scene with `scene:KEY=VALUE[,KEY=VALUE]` (`scene:liveview=on,preset=canyon,ev=10`; the presets are static,
+moving, chart, canyon and race), and the step that records a picture carries `developed` (mode, frames, size, look,
+exposure). A bracket (the HDR item's 3f, 5f and 7f choices) records a file for each frame, Focus Stacking composites
+its frames by local sharpness, Multiple Exposure adds two releases into the second one's file, and in B the exposure
+lasts while S2 is held (the file's ExposureTime is that time). `emu/bin/photo-modes.sh` takes a picture in each mode
+of the OM-3, set as on the camera: the mode dial's P, A, S, M and B, the creative dial's five positions, every item of
+Shooting Menu 2's Computational Modes (High Res on a tripod and handheld, Live ND at a dialled 2 s, Live GND, Focus
+Stacking, HDR1, HDR2, a bracket, Multiple Exposure), and every picture mode, profile and art filter through the Picture
+Mode screen; and a raw file with the picture and Multiple Exposure's Overlay: 70 sessions, 73 pictures. For four modes
+(i-Enhance, Grainy Film I and II, Vintage II) the firmware's own still set-up reaches hardware the lab does not have,
+and the lab stands in that whole step (`models.mjs` `still_setup_lab`). With a +RAW image quality REC_FILE records the
+lab's raw file natively as an ORF (S-RAWFILE, `src/lab/rec.mjs`, `src/lab/orf.mjs`): the sensor's mosaic in the lab's
+own container, laid out as an uncompressed 12-bit ORF, which LibRaw opens and reads back value for value; it is not
+the camera's ORF, and it is a recording of its own under the next file number.
+
 **The card, the HDMI port, the tilt and the session's options.** The page's panel of that name (both players)
 reaches the run-time inputs below from the page. The session line says what the session was started with
 (`GET /api/session`): the HDMI port, the lens (natively with S-LENSMCU, the default on E143, E146 and E147, or

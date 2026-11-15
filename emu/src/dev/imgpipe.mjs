@@ -177,13 +177,25 @@ export class ImgPipe {
   busy() { return this.due !== Infinity; }
   r(off) { return this.regs[off >> 2]; }
   update() { this.intc.setLine(this.cfg.irq, IRQ_PAIRS.some(([s, e]) => (this.r(s) & this.r(e)) !== 0)); }
+  // S-IMGIDLE (src/lab/rec.mjs sets `idle` for REC's still set-up on the bodies that ask for it): every word of the
+  // block and of the codec is storage, so the set-up's parameter loads into units the lab does not have pass (X on
+  // E147: i-Enhance's load of the unit at +0x1000, 0x50482e53, a copy of its part of the register image). Nothing is
+  // started or computed: no job reached its go in the lab's runs (I: one that did would wait for an end)
+  idle_write(off, value) {
+    this.touched = true;
+    if (STATUS.includes(off)) this.regs[off >> 2] = (this.regs[off >> 2] & ~value) >>> 0;
+    else this.regs[off >> 2] = off === COMMIT ? (value & ~0xff) >>> 0 : value;   // (the clock words' commit reads done at once, as above)
+    this.update();
+  }
   read(off, size, dbg) {
+    if (this.idle && size === 4 && !(off & 3)) return this.regs[off >> 2];
     if (size !== 4 || (off & 3) || !READS.has(off)) return this.unknown('read', this.cfg.base + off, size, 0, dbg);
     return this.regs[off >> 2];
   }
   write(off, value, size, dbg) {
     value >>>= 0;
     const no = (why) => this.unknown('write', this.cfg.base + off, size, value, dbg, why);
+    if (this.idle && !dbg && size === 4 && !(off & 3)) return this.idle_write(off, value);
     if (dbg || size !== 4 || (off & 3) || !this.known(off)) return no('');
     this.touched = true;
     if (STATUS.includes(off)) { this.regs[off >> 2] = (this.regs[off >> 2] & ~value) >>> 0; this.update(); return; }
@@ -206,12 +218,14 @@ export class ImgPipe {
     if (IRQ_PAIRS.some(([, e]) => e === off)) this.update();
   }
   jread(off, size, dbg) {
+    if (this.idle && size === 4 && !(off & 3)) return this.jregs[off >> 2];
     if (size !== 4 || off !== J.mode) return this.unknown('read', this.cfg.codec + off, size, 0, dbg);
     return this.jregs[off >> 2];
   }
   jwrite(off, value, size, dbg) {
     value >>>= 0;
     const no = (why) => this.unknown('write', this.cfg.codec + off, size, value, dbg, why);
+    if (this.idle && !dbg && size === 4 && !(off & 3)) { this.jregs[off >> 2] = value; return; }
     if (dbg || size !== 4 || !Object.values(J).includes(off)) return no('');
     this.touched = true;
     if (off === J.encode && value !== 0) return no('the codec\'s encode: only the decode is modelled');

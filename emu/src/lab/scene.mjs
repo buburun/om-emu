@@ -37,6 +37,11 @@ export const PRESETS = {
   chart: [
     { name: 'background', depth_m: 3, speed: 0, pattern: 'chart' },
   ],
+  // a canyon: rock in shade around a waterfall in the sun, about 9 stops apart: more than one exposure holds
+  canyon: [
+    { name: 'background', depth_m: 30, speed: 0, pattern: 'canyon' },
+    { name: 'water', depth_m: 12, speed: 1.5, pattern: 'spray' },
+  ],
   // two motorcycles with their riders, one farther away and to the left, both moving: several subjects of one kind,
   // each with a part (the rider's helmet) for subject detection
   race: [
@@ -120,6 +125,21 @@ export function cocMm(lens, z) {
 const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
 const hash = (x) => { let h = Math.imul(x | 0, 0x9E3779B1) ^ 0x85EBCA6B; h = Math.imul(h ^ (h >>> 15), 0x2C1B3C6D); return ((h ^ (h >>> 13)) >>> 0) / 4294967296; };
 const PATTERNS = {
+  // (radiance relative to a white surface in the scene's light: the sunlit water and sky are above 1)
+  canyon(X, Y) {
+    const gap = 1.6 + 0.5 * Math.sin(Y / 3.1) + 0.25 * Math.sin(Y * 1.7), ax = Math.abs(X + 0.6 * Math.sin(Y / 4));
+    if (Y > 7 + 1.5 * Math.sin(X / 2.3) && ax < 3 * gap) return [[2.2, 2.8, 4.0], 1];            // sky
+    if (ax < gap) { const f = 0.75 + 0.25 * Math.sin(Y * 23 + 4 * Math.sin(X * 9)); return [[3.2 * f, 3.3 * f, 3.4 * f], 1]; }   // the fall
+    const s = 0.5 + 0.5 * Math.sin(X * 3.7 + Math.sin(Y * 2.9)) * Math.sin(Y * 5.3 + 1.3 * Math.sin(X * 1.9));
+    const moss = Math.sin(X * 0.9) * Math.sin(Y * 0.7) > 0.55;
+    return [moss ? [0.012 + 0.01 * s, 0.03 + 0.02 * s, 0.01] : [0.02 + 0.03 * s, 0.018 + 0.026 * s, 0.016 + 0.022 * s], 1];
+  },
+  spray(X, Y) {                                   // drops crossing in front of the fall: what a long exposure smooths
+    const c = Math.floor(X / 0.35), r = Math.floor(Y / 0.35), k = hash(c * 131 + r * 7919);
+    if (k < 0.8) return [[0, 0, 0], 0];
+    const dx = X / 0.35 - c - 0.5, dy = Y / 0.35 - r - 0.5;
+    return dx * dx + dy * dy < 0.06 ? [[3.6, 3.6, 3.6], 1] : [[0, 0, 0], 0];
+  },
   sky(X, Y) {
     const hill = 18 * Math.sin(X / 37) + 9 * Math.sin(X / 13 + 1.7) - 6;
     if (Y < hill) return [[0.18, 0.32 + 0.06 * Math.sin(X / 5), 0.12], 1];
@@ -199,16 +219,15 @@ function boxBlur(src, w, h, r, axis, tmp) {
   }
 }
 
-// Render the scene at lab time t_s (seconds) and frame number `frame` (the noise seed) as width x height linear RGB
-// floats (premultiplied composite of the layers), then expose, add noise, apply the transfer curve and return
-// [width, height, rows] with rows of YCbCr 4:2:2 bytes (Y0 Cb Y1 Cr), the live-view bank's format.
-// scale: the frame is rendered at width/scale x height/scale and each pixel repeated (the live view's cost).
-export function renderFrame(scene, width, height, t_s, frame, scale = 2) {
-  const w = Math.ceil(width / scale), h = Math.ceil(height / scale), np = w * h;
+// The scene at lab time t_s (seconds) as w x h linear RGB floats (the layers' premultiplied composite, each blurred by
+// its circle of confusion and smeared over shutter_s, the exposure time): { w, h, R, G, B }, a mid-grey surface 0.18.
+// What renderFrame exposes and encodes, and what the still's development (src/lab/develop.mjs S-DEVELOP) exposes.
+export function renderLinear(scene, w, h, t_s, shutter_s = exposureOf(scene).shutter_s) {
+  const np = w * h;
   const R = new Float32Array(np), G = new Float32Array(np), B = new Float32Array(np);
   const lr = new Float32Array(np), lg = new Float32Array(np), lb = new Float32Array(np), la = new Float32Array(np);
   const tmp = new Float32Array(Math.max(w, h));
-  const { focal_mm: f } = scene.lens, exp = exposureOf(scene);
+  const { focal_mm: f } = scene.lens;
   const mmPerPx = SENSOR_MM[0] / w;
   for (const layer of scene.layers) {
     const pat = PATTERNS[layer.pattern];
@@ -228,13 +247,24 @@ export function renderFrame(scene, width, height, t_s, frame, scale = 2) {
     }
     // defocus (box blur x3 ~ a Gaussian of the circle of confusion's radius) and motion smear over the exposure
     const blurPx = cocMm(lensInUse(scene), z) / mmPerPx / 2;
-    const smearPx = Math.abs(layer.speed * exp.shutter_s) / mPerPx;
+    const smearPx = Math.abs(layer.speed * shutter_s) / mPerPx;
     for (const plane of [lr, lg, lb, la]) {
       for (let k = 0; k < 3; k++) { boxBlur(plane, w, h, blurPx / Math.sqrt(3), 0, tmp); boxBlur(plane, w, h, blurPx / Math.sqrt(3), 1, tmp); }
       boxBlur(plane, w, h, smearPx / 2, 0, tmp);
     }
     for (let i = 0; i < np; i++) { const k = 1 - la[i]; R[i] = R[i] * k + lr[i]; G[i] = G[i] * k + lg[i]; B[i] = B[i] * k + lb[i]; }
   }
+  return { w, h, R, G, B };
+}
+
+// Render the scene at lab time t_s (seconds) and frame number `frame` (the noise seed): renderLinear's composite,
+// exposed, with noise added and the transfer curve applied, as [width, height, rows] with rows of YCbCr 4:2:2 bytes
+// (Y0 Cb Y1 Cr), the live-view bank's format.
+// scale: the frame is rendered at width/scale x height/scale and each pixel repeated (the live view's cost).
+export function renderFrame(scene, width, height, t_s, frame, scale = 2) {
+  const exp = exposureOf(scene);
+  const { w, h, R, G, B } = renderLinear(scene, Math.ceil(width / scale), Math.ceil(height / scale), t_s, exp.shutter_s);
+  const np = w * h;
   // exposure, noise, transfer curve (gamma 1/2.2), full-range BT.601
   let seed = (frame * 2654435761) >>> 0 || 1;
   const rnd = () => { seed ^= seed << 13; seed >>>= 0; seed ^= seed >>> 17; seed ^= seed << 5; seed >>>= 0; return seed / 4294967296; };

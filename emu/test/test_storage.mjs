@@ -682,7 +682,7 @@ export async function storageSession() {
       const s2 = pl.session, img = s2.camapp.images[0];
       if (rec) ok(rec.started && rec.waiting(), `REC_FILE (task ${rec.R.task.id}) started at the picture and waiting on its input again`);
       ok(img?.file?.path === `${names.drive}:\\${file1.replaceAll('/', '\\')}`, `S2 wrote the picture's file: ${JSON.stringify(img?.file)}`);
-      const jfif = img ? jpegOfFrame(s2.picture_frame(s2.camapp.views.get(img.release) ?? null)) : null;
+      const jfif = img ? s2.picture(s2.camapp.views.get(img.release) ?? null).jpeg : null;
       // natively the file is the firmware's header and the encoder's stream after it (src/lab/rec.mjs S-JPEGENC)
       const stream = jfif && rec ? encoderStream(jfif) : null, want = jfif && (rec ? { length: HEADER + stream.length } : jfif);
       const vol = new FatVolume((lba, n) => card.read(lba, n), mbrPartition(card.read(0, 1)).start);
@@ -818,9 +818,12 @@ export async function storageSession() {
         for (const [bx, by] of [[0, 0], [10, 7], [Math.floor(w / 16), Math.floor(h / 16)]]) {
           let sum = 0;
           for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) sum += rows[by * 8 + y][2 * (bx * 8 + x)];
-          worst = Math.max(worst, Math.abs(d.components[0].samples[(by * 8 + 3) * d.width + bx * 8 + 3] - sum / 64));
+          // (S-DEVELOP's picture has its DCT coded whole: the decoded block's mean, not one of its samples)
+          let dec = 0;
+          for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) dec += d.components[0].samples[(by * 8 + y) * d.width + bx * 8 + x];
+          worst = Math.max(worst, Math.abs(dec / 64 - sum / 64));
         }
-        ok(worst <= 1, `the decoded luma is the capture frame's block means (worst difference ${worst})`);
+        ok(worst <= 1, `the decoded luma's block means are the capture frame's (worst difference ${worst})`);
       }
       // where REC's recorder records it (S-RECFILE's DCF steps) or REC_FILE natively: the DCF database counts it in the
       // same session, and its fnode of index 1 is the file's
@@ -1212,7 +1215,7 @@ export async function storageSdxc(sizes = [64, 128], hlsSizes = [64]) {
       for (const inp of [...(LIVE_VIEW ? [{ type: 'scene', change: { liveview: true } }] : []), { type: 'token', token: 'WAIT:100' }, { type: 'key', id: 's1', action: 'down' },
         { type: 'key', id: 's2', action: 'down' }, { type: 'token', token: 'WAIT:700' }, { type: 'key', id: 's2', action: 'up' }, { type: 'key', id: 's1', action: 'up' }]) pl.run_input(inp);
       const s = pl.session, lab = s.lab, img = s.camapp.images[0];
-      const want = img ? jpegOfFrame(s.picture_frame(s.camapp.views.get(img.release) ?? null)) : null;
+      const want = img ? s.picture(s.camapp.views.get(img.release) ?? null).jpeg : null;
       // with REC_FILE natively (src/lab/rec.mjs): the firmware's header, then the stream but its SOI, which the header's
       // XMP segment ends over
       const { encoderStream } = await import('../src/lab/rec.mjs');

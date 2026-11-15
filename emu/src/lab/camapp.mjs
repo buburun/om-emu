@@ -147,7 +147,6 @@ import { packRegs } from './sim.mjs';
 import { pack, unpack } from '../util/bytes.mjs';
 import { hex } from '../util/hex.mjs';
 import * as SC from './scene.mjs';
-import { jpegOfFrame } from './jpeg.mjs';
 import { HlsMedia, MEDIA_NOT_PRESENT } from './media.mjs';
 import { SubjectFrames } from './subject.mjs';
 import { MdetDl } from './mdet.mjs';
@@ -645,6 +644,7 @@ const LENS_DERIVE = [A(0x502A63C2), A(0x50129A3E), A(0x50129980), A(0x501299A2)]
 const LENS_ID = [0x00, 0x00, 0x19, 0x10, 0x00, 0x00], LENS_NAME = '12-40mm F2.8 PRO';
 const LENS_ZOOM = [12, 14, 17, 20, 25, 30, 35, 40], LENS_AP = [761, 2283];    // mm; APEX x 256 (F2.8, F22)
 // S-EXPOSE: the AE result objects (one per metering mode), the setter, the plan and its output
+const BULB_TV = -32768;
 const BV_OBJECTS = [0xC12A, 0xC0BA, 0xC0CA], PROP_SET = A(0x5004188B), EXPOSE_CALC = A(0x50597E82);
 const AE_PLAN = A(0x62A919DC), PLAN = { tv: 6, sv: 10, av: 14 }, STATE_SHOOTING = 0x0108;
 // S-DISPFRAME: CPU 3's task DISP_FRAME (id 0x300d, entry 0x5100d05a; the same image) run on the lab CPU. Its start: the
@@ -1034,12 +1034,18 @@ export class CamApp {
     this.lens_zoom(sc.lens.focal_mm);
     const bv = Math.round((sc.ev - 5) * 256);
     for (const id of BV_OBJECTS) lab.call(PROP_SET, { d0: id, d1: 0, a0: 0, a1: bv & 0xFFFF }, null, null, 2000000);
+    // H-SEQSET: the exposure sequences' settings module's init natively, once, before the first plan (src/fw/models.mjs
+    // seq_settings_init)
+    if (MODEL_INFO.seq_settings_init && !this.seq_settings) { this.seq_settings = true; lab.call(MODEL_INFO.seq_settings_init, null, null, null, 2000000); }
     lab.call(EXPOSE_CALC, { d0: 0 }, null, null, 20000000);
     s.settle('S-EXPOSE');
     const at = (k) => { const v = lab.sim.read(AE_PLAN + PLAN[k], 2); return ((v[0] | v[1] << 8) << 16) >> 16; };
     const tv = at('tv'), av = at('av'), sv = at('sv');
-    this.plan = { bv, tv, av, sv, shutter_s: 2 ** (-tv / 256), aperture: 2 ** (av / 512), iso: 3.125 * 2 ** (sv / 256) };
-    if (s.scene) s.scene.exposure.camera = { shutter_s: this.plan.shutter_s, aperture: this.plan.aperture, iso: this.plan.iso };
+    // (bulb: the plan's Tv is -32768 at the mode dial's B, X on E147 once H-SEQSET ran; the exposure then lasts while
+    // S2 is held, S-RELSEQ, and the live view keeps the lab's own auto exposure)
+    const bulb = tv === BULB_TV;
+    this.plan = { bv, tv, av, sv, bulb, shutter_s: 2 ** (-tv / 256), aperture: 2 ** (av / 512), iso: 3.125 * 2 ** (sv / 256) };
+    if (s.scene) s.scene.exposure.camera = bulb ? null : { shutter_s: this.plan.shutter_s, aperture: this.plan.aperture, iso: this.plan.iso };
     return this.plan;
   }
   // S-DISPFRAME: DISP_FRAME's start on the lab CPU and the TFT channel's face-plane colours (see DF_COLOUR_INIT)
@@ -1905,16 +1911,26 @@ export class CamApp {
         this.log.push(['card', drive ? 'no card mounted in the save slot (slot 2): no image, no file' : 'no card mounted: no image, no file']);
       } else if (name === 'END_SHOOTING_PICTURE') {                                   // S-CARD
         // the camera's clock and the lens's focal length at the capture (S-PLAYSEQ's still information)
-        const img = { folder: CARD_FOLDER, number: this.images.length + 1, release: this.release, clock: this.clock(), focal_mm: this.lens_focal() };
-        this.images.push(img);
-        if (s.storage) {                                                               // S-RECFILE (storage.mjs)
-          const frame = s.picture_frame(this.views.get(img.release) ?? null);
-          img.file = s.storage.write_picture(jpegOfFrame(frame, this.play_native ? { dht: this.play_native.dht } : {}), drive);   // A-JPEGDHT-1
-          img.folder = img.file.folder; img.number = img.file.number;                 // its DCF name's numbers
-          img.size = [frame[0], frame[1]];                                              // the JPEG's own size
+        // S-DEVELOP, A-JPEGDHT-1: the release's pictures (one, or a bracket's frames: a file each); none without a card
+        // file system in the lab
+        const pics = s.storage ? s.pictures(this.views.get(this.release) ?? null) : [null];
+        if (!pics.length) this.log.push(['card', 'Multiple Exposure: the first frame, no file']);
+        for (const pic of pics) {
+          const img = { folder: CARD_FOLDER, number: this.images.length + 1, release: this.release, clock: this.clock(), focal_mm: this.lens_focal() };
+          this.images.push(img);
+          if (pic) {                                                                     // S-RECFILE (storage.mjs)
+            const { frame, report, jpeg, raw } = pic;
+            if (report) { img.develop = report; this.log.push(['develop', JSON.stringify(report)]); }
+            if (s.storage.rec && report) s.storage.rec.make_image_lab = (MODEL_INFO.still_setup_lab ?? []).includes(report.look);   // S-JPEGENC
+            img.file = s.storage.write_picture(jpeg, drive);
+            if (raw) { img.raw = s.storage.write_picture(null, drive, raw); this.log.push(['card', `raw file ${img.raw.path}, ${img.raw.size} bytes`]); }   // S-RAWFILE
+            img.folder = img.file.folder; img.number = img.file.number;               // its DCF name's numbers
+            img.size = [frame[0], frame[1]];                                            // the JPEG's own size
+
+          }
+          this.log.push(['card', `image ${img.folder}-${String(img.number).padStart(4, '0')} saved`]);
+          if (img.file) this.log.push(['card', `file ${img.file.path}, ${img.file.size} bytes`]);
         }
-        this.log.push(['card', `image ${img.folder}-${String(img.number).padStart(4, '0')} saved`]);
-        if (img.file) this.log.push(['card', `file ${img.file.path}, ${img.file.size} bytes`]);
       }
     }
   }
@@ -1961,12 +1977,18 @@ export class CamApp {
       this.post('START_EXPOSE');
       const t = live ? SC.exposureOf(sc).shutter_s : DEFAULT_SHUTTER_S;
       this.shutter_sound?.open(this.s.lab.lab_time());                             // S-SHUTTERSND: the exposure starts
-      this.at(t * 1e9, 'END_EXPOSE');
-      this.at(t * 1e9, 'END_SHOOTING_PICTURE');
-      this.at(t * 1e9, 'START_RECVIEW');
-      this.at(t * 1e9 + RECVIEW_NS, 'END_RECVIEW');
-      this.at(t * 1e9 + RECVIEW_NS, 'START_THROUGH_IMAGE_PROCESS');
-      this.tick();
+      // bulb (the plan's, expose()): the exposure ends when S2 goes up, below
+      if (live && this.plan?.bulb) this.bulb_open = this.s.lab.lab_time();
+      else { this.exposure_end(t); this.tick(); }
+    }
+    if (ups.includes('s2') && this.bulb_open != null) {
+      // the capture's exposure: the time S2 was held, at the plan's f-number and ISO
+      const held = (this.s.lab.lab_time() - this.bulb_open) / 1e9, view = this.views.get(this.release);
+      this.bulb_open = null;
+      if (view) { view.scene.exposure.camera = { shutter_s: held, aperture: this.plan.aperture, iso: this.plan.iso }; if (view.capture) view.capture.shutter_s = held; }
+      if (this.s.storage?.rec) this.s.storage.rec.bulb_tv = Math.round(-Math.log2(held) * 256);    // S-EXIFPRM: the file's ExposureTime
+      this.log.push(['cbs', `bulb: S2 held ${held.toFixed(3)} s`]);
+      this.exposure_end(0); this.tick();
     }
     for (const f of this.funcs) this.log.push(['func', `function direct ${f}`]);
     if (this.recording !== null && (rec_down || this.funcs.includes(FUNC_RECORDING_MOVIE))) {
@@ -1980,6 +2002,14 @@ export class CamApp {
       this.at(1e9, 'UPDATE_SHOOTING_TIME', 1);
     }
     this.funcs = [];
+  }
+  // S-RELSEQ's callbacks from the exposure's end, t seconds from now
+  exposure_end(t) {
+    this.at(t * 1e9, 'END_EXPOSE');
+    this.at(t * 1e9, 'END_SHOOTING_PICTURE');
+    this.at(t * 1e9, 'START_RECVIEW');
+    this.at(t * 1e9 + RECVIEW_NS, 'END_RECVIEW');
+    this.at(t * 1e9 + RECVIEW_NS, 'START_THROUGH_IMAGE_PROCESS');
   }
   // After lab time passed (an idle slice, a step): the replies, and every timed post that is due.
   tick() {

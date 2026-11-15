@@ -215,6 +215,7 @@ import { MODEL_INFO, fact, A } from '../fw/model.mjs';
 import { REC_FILE_E143, REC_IMAGE_E143, TAKE_EXPOSURE_E143 } from '../fw/facts.mjs';
 
 export class RecError extends FirmwareError {}
+const TV_AT = 6;                                // the exposure record's Tv (TAKE_EXPOSURE_E143's reads: 41002 at +6)
 
 const h8 = (v) => '0x' + (v >>> 0).toString(16).padStart(8, '0');
 // REC_FILE natively on a body that gives rec_native (src/fw/models.mjs), at the addresses and layouts the rule reads
@@ -267,6 +268,11 @@ export const recImageFacts = () => fact('rec_image', REC_IMAGE_E143);
 const STILL = 4097;          // Mode: REC_MAIN's still (0x5053a349); REC_IMAGE makes its image
 const NO_MEDIA = 0xFFFF;     // Media2: no second slot (0x5053dd14)
 const CARD = 1;              // RecordDevice bit 0: the card (0x50540392, 0x50540418)
+const RAW = 3;               // FileType 3: the kind REC_FILE's single-file record gives a raw file, the extension table's
+                             // second ORF (E147, D: 0x5052be8c..0x5052bea3 makes a FileType of 0 kind 3 where the packet has no
+                             // second buffer; the table at 0x606e5ff8 is ORF JPG TIF ORF RAW ...). A FileType of 0 itself is
+                             // the RAW + JPEG pair, whose record skips the DCF open (0x5052c911: two files) that another
+                             // pass, not run in the lab, makes: X, nothing was recorded with it
 const JPEG = 1;              // FileType: the extension and DCF kind tables' index 1 (0x5053fee3; JPG, kind 1)
 const SHOT = 1;              // HandleTarget: TAKE's shot id (I: the lab's one shot; 0x5053a41e accepts 1..117)
 // Command: the requester's command, which REC_MAIN copies from its message (docs/hle-gaps.md 4.3.4) and dispatches on:
@@ -407,6 +413,10 @@ export class RecFile {
       if (other !== undefined && v === when) take[other] = v = read(other, n);
       sim.write(x + at, n === 1 ? Uint8Array.of(v) : pack('<H', v));
     }
+    // S-WBGAIN (the bodies whose MODELS entry gives wb_gains): the shot's four white balance gains, which REC_PREPRO's
+    // rec_precon_wb_exec fills on the camera and nothing fills in the lab (0: docs/hle-gaps.md 4.3.4): 256 each, no
+    // gain, as S-DEVELOP's sensor is neutral (src/lab/develop.mjs: its mosaic needs no white balance)
+    if (MODEL_INFO.wb_gains !== undefined) sim.write(x + MODEL_INFO.wb_gains, pack('<HHHH', 256, 256, 256, 256));
     // TAKE's exposure, in the order of TAKE's still states: StlRdy1's exposure record (a record of the lab's in place
     // of a slot of TAKE's ring) filled natively from the settings store, where the exposure plan published it; the
     // shot-record fill's copy of TAKE_EXPOSE's shutter range; takepic's copy of the record into the block (the rule's
@@ -421,6 +431,11 @@ export class RecFile {
         sim.write(x + to, v);
         exposure[from] = ((v[0] | v[1] << 8) << 16) >> 16;
       }
+      // a bulb exposure (camapp.mjs S-RELSEQ): the plan's Tv is its bulb mark, and TAKE, which would give the time
+      // S2 was held, does not run: the lab's Tv of that time (APEX x 256) in the record's Tv, taken once
+      const tv = T.copy.find(([from]) => from === TV_AT);
+      if (this.bulb_tv != null && tv) { sim.write(x + tv[1], pack('<H', this.bulb_tv & 0xFFFF)); exposure[TV_AT] = this.bulb_tv; }
+      this.bulb_tv = null;
     }
     if (this.exif_set()) {
       // the EXIF set natively, as takepic calls it once its fill is made: the dates, the zoom ratio, the gains
@@ -439,12 +454,18 @@ export class RecFile {
   // drive REC_FILE records on (0, or 1 for the second slot's card: DevRec_Rec's apiRecInfo.slot[0], which REC_MAIN
   // copies there, docs/hle-gaps.md 4.8.12; Media2 stays none: the double-slot record is not made here). Returns the
   // file's record {path, size, folder, number, cluster, stamp, clock, header, date}
-  record(jpeg, media = 0) {
+  // raw (S-RAWFILE; the bodies whose MODELS entry gives rec_file_handler): the lab's raw file (src/lab/orf.mjs) as a
+  // recording of its own, after its picture's: REC_IMAGE makes a buffer and a header as for a JPEG, with a stream of
+  // zeros of the raw file's length, and where REC_FILE's handler takes the packet the lab puts the raw file's bytes
+  // in the buffer, its length in BuffSize1 and FileType 3 (RAW, below). I: the camera's REC_RAWNR and raw encode make
+  // its ORF, in one packet with the picture and under one file number; here the raw file takes the next number
+  record(jpeg, media = 0, raw = null) {
     const lab = this.lab, sim = lab.sim, R = this.R, P = R.packet.fields, who = this.image ? 'S-RECREQ' : 'S-RECIMAGE';
+    if (raw && !(this.image && MODEL_INFO.rec_file_handler)) throw new RecError('S-RAWFILE: no REC_FILE handler is read on this body (src/fw/models.mjs rec_file_handler)');
     if (!this.started) this.bring_up();
     if (!this.waiting()) throw new RecError(`${who}: REC_FILE (task ${R.task.id}) is not waiting on its input`);
     if (this.image && !this.waiting(this.image.task.id)) throw new RecError(`${who}: REC_IMAGE (task ${this.image.task.id}) is not waiting on its queue`);
-    const stream = encoderStream(jpeg);
+    const stream = raw ? new Uint8Array(Math.max(raw.length - R.jpeg.header, 16)) : encoderStream(jpeg);
     const { x, clock, date, take, exposure } = this.exif_param();
     const pk = lab.alloc(new Uint8Array(R.packet.size), 4);
     const put = (field, fmt, v) => sim.write(pk + P[field], pack(fmt, v));
@@ -459,7 +480,7 @@ export class RecFile {
       if (P.RecordDevice !== null) put('RecordDevice', '<H', CARD);
       put('FileType', '<B', JPEG);
     }
-    const { header, size } = this.image ? this.image_native(pk, stream, take, exposure) : this.image_lab(pk, stream);
+    const { header, size } = this.image ? this.image_native(pk, stream, take, exposure, raw) : this.image_lab(pk, stream);
     // the file, from REC_FILE's context of the packet's Media (rec_file_record picks it by Media's value, the second
     // for 1: 0x5053ff29..0x5053ff37, D; its fnode and DCF block, storage.mjs REC's layouts); where rec_make_file keeps
     // the context on its stack (recFileInline: contexts null), from the fnode and the stamp it held at the
@@ -527,7 +548,7 @@ export class RecFile {
   // REC_IMAGE's task natively with S-JPEGENC's encode (the lab's stream), REC_FILE natively, S-RECREQ's reply taken;
   // lab time runs until the reply and both tasks wait again. Returns {header, size} as REC_FILE's packet has them at
   // its reply
-  image_native(pk, stream, take, exposure) {
+  image_native(pk, stream, take, exposure, raw = null) {
     const lab = this.lab, sim = lab.sim, R = this.R, J = R.jpeg, P = R.packet.fields, I = this.image, who = 'S-RECREQ';
     const imgpro = lab.sim.m.devices.imgpro, runs0 = imgpro?.runs ?? 0;
     const alive = lab.alloc(new Uint8Array(4), 4);
@@ -554,6 +575,30 @@ export class RecFile {
       run.task = lab.lt.current() === lab.nk.tcb(I.task.id) ? I.task.id : null;
     };
     const hooked = [I.reply.fn, E.set_call, E.run, E.result, E.release];
+    // a picture mode whose still set-up the lab cannot run (make_image_lab, set by camapp.mjs S-CARD for this picture
+    // from src/fw/models.mjs still_setup_lab): rec_jpeg_make_image as a whole, as S-RECIMAGE stands it in on the
+    // E144 family, the rest of rec_jpeg_exec and REC_FILE natively
+    const whole = this.make_image_lab === true || raw !== null;      // (a raw file: no picture's set-up to run)
+    this.make_image_lab = false;
+    // S-IMGIDLE (src/dev/imgpipe.mjs): the pipeline block takes and ends the jobs of this picture's set-up without
+    // computing them, where the body asks for it (src/fw/models.mjs still_setup_idle)
+    const pipe = MODEL_INFO.still_setup_idle ? lab.sim.m.devices.imgpipe ?? null : null, idle0 = pipe?.idle_runs ?? 0;
+    if (pipe) pipe.idle = true;
+    if (whole) {
+      lab.hook(J.make_image, (h, r) => { const at = r.a0 >>> 0; ours(at, 'rec_jpeg_make_image'); encode(at); run.whole = true; h.finish(r, { d0: 0 }); }, 'S-JPEGENC');   // (a0: REC_IMAGE's copy of the packet)
+      hooked.push(J.make_image);
+    }
+    if (raw) {                                     // S-RAWFILE, at REC_FILE's handler for this packet
+      lab.observe(MODEL_INFO.rec_file_handler, (l, r) => {
+        const p = r.a0 >>> 0;
+        if (u32(p, 'pExifParam') !== u32(pk, 'pExifParam')) return;
+        sim.write(u32(p, 'BuffAddr1'), raw);
+        sim.write(p + P.BuffSize1, pack('<I', raw.length));
+        sim.write(p + P.FileType, Uint8Array.of(RAW));
+        run.raw = true;
+      }, 'obs-rec-raw');
+      hooked.push(MODEL_INFO.rec_file_handler);
+    }
     // the firmware's error logs from the post to the parameter set's call (ImageParam's sources, docs/hle-gaps.md
     // 4.3.4): [code, caller] each; and the handle ImageParam hands the set (d0, loaded from the image right before the
     // call, the rule's form), which the run's read at the rule's id must match
@@ -584,13 +629,17 @@ export class RecFile {
         if (lab.lab_time() - t0 > LIMIT_MS * 1e6) throw new RecError(`${who}: no reply from REC_FILE after ${LIMIT_MS} ms of lab time (REC_IMAGE state 0x${lab.nk.state(I.task.id).toString(16)}, encoded ${run.encoded})`);
         lab.elapse(SLICE_MS, `${who} REC_IMAGE`);
       }
-    } finally { for (const a of hooked) lab.hooks.delete(runtime(a)); }
+    } finally { for (const a of hooked) lab.hooks.delete(runtime(a)); if (pipe) pipe.idle = false; }
     const y = run.reply, fills = (imgpro?.log ?? []).filter((f) => f.n > runs0);
     // S-JPEGENC's steps
     const steps = { set: run.set, run: run.run, result: run.encoded, id: run.id, handle: run.handle, released: run.released };
     const record = { task: run.task, encoded: run.encoded, steps, errlog: run.errlog, reply: y, alive: sim.u32(alive) >>> 0, fills: fills.map((f) => ({ mode: f.mode, dst: f.dst, bytes: f.bytes, rows: f.rows, value: f.value })), take, exposure };
     this.images.push(record);
-    if (run.encoded !== 1 || run.set !== 1 || run.run !== 1 || !run.id || run.id !== run.handle || run.released !== 1 || run.task !== I.task.id || y.status !== 0 || y.header !== J.header || y.addr !== run.addr || y.size !== y.header + stream.length || record.alive !== 0) {
+    const stepped = whole ? run.whole === true && run.set === 0 && run.run === 0 : run.set === 1 && run.run === 1 && !!run.id && run.id === run.handle && run.released === 1;
+    if (raw && !run.raw) throw new RecError('S-RAWFILE: REC_FILE\'s handler did not take the raw file\'s packet');
+    // what REC_FILE's reply holds in BuffAddr1 / BuffSize1: the picture, or with a raw file the raw file after it
+    const want = { addr: run.addr, size: raw ? raw.length : y.header + stream.length };
+    if (run.encoded !== 1 || !stepped || run.task !== I.task.id || y.status !== 0 || y.header !== J.header || y.addr !== want.addr || y.size !== want.size || record.alive !== 0) {
       throw new RecError(`${who}: REC_IMAGE encoded ${run.encoded} times${run.task === I.task.id ? ' in its task' : ''} (S-JPEGENC's steps ${JSON.stringify(steps)}), REC_FILE replied status 0x${y.status.toString(16)}, HeaderSize ${y.header}, BuffAddr1 ${h8(y.addr)} (the encode's ${h8(run.addr)}), BuffSize1 ${y.size} (the stream ${stream.length} bytes), pAlive ${record.alive}`);
     }
     return { header: y.header, size: y.size };

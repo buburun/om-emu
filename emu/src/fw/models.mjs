@@ -667,6 +667,44 @@ export const MODELS = {
     // positions CRT, ART, COLOR, MONO set 897 to 900, 899, 901, 988, and 898 is no position of the body's dial; which
     // way the dial turns between the lab's positions is not in the firmware (?)
     creative_dial: { labels: ['MONO', 'COLOR', 'position 2', 'ART', 'CRT'] },
+    // the GUI properties S-DEVELOP reads at S2 (src/lab/develop.mjs; X, 2026-11-15: the ids the menu's own items wrote
+    // in a session, Shooting Menu 2's Computational Modes and the creative dial's positions; `group` names the
+    // property that holds the picture mode at the dial's position, develop.mjs MODES)
+    // the picture modes (src/lab/develop.mjs MODES' names) whose still set-up inside rec_jpeg_make_image the lab cannot
+    // run, so S-JPEGENC stands the whole of it in for their pictures (src/lab/rec.mjs image_native). X, 2026-11-15,
+    // one S2 in each of the 47 modes: with S-WBGAIN and S-IMGIDLE (below) 44 run it natively, and for these three the
+    // image library's create returns 40655 (REC's error 0x1e00d001 at its line 427, then REC_FILE's status 0x1f60),
+    // the second step's failure docs/hle-gaps.md 4.3.12 met with bit 19 forced. Its cause here (X, D): the second
+    // step 0x504987bb makes the filter's option object, the Grainy Films' with 0x504ac901 and Vintage II's with
+    // 0x504acf97, each null; the Grainy Films' builder 0x504ae099 asks the request's work pool (0x5048ee4b) for
+    // 1024 bytes, which it gets, and then for 0x0269a000 bytes, a whole frame's layer, which the pool refuses
+    // (40657): the request's work buffer has no size in the lab (4.3.9: what gives REC that buffer is not read).
+    // Vintage II's builder is not followed (I: the same)
+    still_setup_lab: ['Grainy Film I', 'Grainy Film II', 'Vintage II'],
+    // S-IMGIDLE (src/dev/imgpipe.mjs): during REC's still set-up the pipeline block's words are storage. X: without
+    // it i-Enhance stops at its load of the unit at 0x9c201000 (0x50482e5c); with it its picture is made natively
+    still_setup_idle: true,
+    // S-WBGAIN (src/lab/rec.mjs): the shot record's white balance gains, four halfwords (D: rec_ImgPro_ImageParam
+    // takes them from +37462, 0x5052e9d0; E143's are at +37810)
+    wb_gains: 37462,
+    // the dials' slots in UI_IN's dial table (src/lab/nav.mjs DIALS gives E143's, 2 and 3 of its four): E147's table
+    // has two, the main dial's first (X: the table at 0xa32d9c4c after the start, two entries of 16 bytes ending in
+    // the dials' codes 0x02031902 and 0x02031903; D: the counter writer 0x50156bb5 finds a dial among 2,
+    // 0x50156c42). With E143's slots the lab's unread check read the writer's event ring (5 entries from 0xa32d9c6c,
+    // 0x50156d51), whose third entry is the main dial's "counter word" there: every third detent was refused
+    dial_slots: { main: 0, sub: 1 },
+    // H-SEQSET (src/lab/camapp.mjs): the init of the exposure sequences' settings module (0x502f9cf3, D: it clears
+    // its state and installs the module's settings reader 0x6031a59f in the word 0xa335b3c8 through 0x502f80aa and
+    // 0x502f83da), which the start code calls once (0x501f7493) and the lab's start does not run. Without it the
+    // module's reads (0x502f8413: `mov (0xa335b3c8),a2; cmp 0,a2; beq`) fill nothing, and the Live ND plan
+    // 0x502f9776 finds an EV step of 0 where it takes 85, 128 or 256 and logs 0x0e000002 at line 2519 (X: at each
+    // half-press with Live ND on)
+    seq_settings_init: 0x502F9CF3,
+    develop_props: { group: 897, high_res: 771, nd: 1709, nd_stops: 1710, gnd: 2166, gnd_stops: 2167, gnd_type: 2168, hdr: 471,
+      stack: 1356, stack_shots: 1495, stack_step: 2123, multi: 266, multi_gain: 267, overlay: 268, quality: 1366 },
+    // S-RAWFILE (src/lab/rec.mjs): REC_FILE's packet handler (D: its task 0x5052b093 calls it with the packet in a0
+    // for a packet of its queue, 0x5052b0f7, and of REC's ring, 0x5052b133)
+    rec_file_handler: 0x5052B243,
     // the still / movie switch (src/lab/play.mjs switch_idle): UI_IN's 0x1909 on bits 0..2 of group 4, polarity 1
     // (its tables, X), which the application's mode reader reads right after the mode dial's 0x1901 (D). At its
     // positions 0 and 1 the application's setting 44 reads 1, at 2 it reads 0 (X); E143 sets 44 to 1 at the mode

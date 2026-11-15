@@ -19,7 +19,7 @@ import { hexDigits as fx } from '../util/hex.mjs';
 import { Tally } from '../util/tally.mjs';
 
 export let NAV_PRI = 50;
-export const POST_HOOKS = 140, STEP_HOOKS = 40000, STORM = 810;
+export const POST_HOOKS = 140, STEP_HOOKS = 40000, STORM = 8000;
 export const WAIT_STORM_PER_MS = 0.4, WAIT_HOOKS_PER_MS = 9;
 export let WAIT_SLICE_MS = 10000;
 export function setNavPri(v) { NAV_PRI = v; }
